@@ -1,44 +1,96 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
-    function matchDoc(matchId) { return get(/databases/$(database)/documents/matches/$(matchId)); }
-    function isOrganizer(matchId) {
-      return signedIn() && exists(/databases/$(database)/documents/matches/$(matchId)/organizers/$(request.auth.uid));
+    function signedIn() {
+      return request.auth != null;
     }
+
+    function matchPath(matchId) {
+      return /databases/$(database)/documents/matches/$(matchId);
+    }
+
+    function matchExists(matchId) {
+      return exists(matchPath(matchId));
+    }
+
+    function isOrganizer(matchId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/matches/$(matchId)/organizers/$(request.auth.uid));
+    }
+
+    function isTeamMember(matchId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/matches/$(matchId)/teams/$(request.auth.uid));
+    }
+
     match /matches/{matchId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.status == 'waiting';
       allow update, delete: if isOrganizer(matchId);
+
       match /organizers/{uid} {
         allow read: if signedIn() && (request.auth.uid == uid || isOrganizer(matchId));
-        allow create: if signedIn() && request.auth.uid == uid && matchDoc(matchId).data.ownerUid == uid;
+        allow create: if signedIn()
+          && request.auth.uid == uid
+          && get(matchPath(matchId)).data.ownerUid == uid;
         allow update, delete: if false;
       }
+
       match /teams/{teamId} {
         allow read: if signedIn();
-        allow create: if signedIn() && request.auth.uid == teamId
+        allow create: if signedIn()
+          && matchExists(matchId)
+          && request.auth.uid == teamId
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.score == 0
           && request.resource.data.completedMissions == 0;
-        allow update: if isOrganizer(matchId) || (signedIn() && request.auth.uid == teamId
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['online','lastSeen','members','name']));
+        allow update: if isOrganizer(matchId)
+          || (signedIn()
+            && request.auth.uid == teamId
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['online', 'lastSeen', 'members', 'name']));
         allow delete: if isOrganizer(matchId);
       }
+
+      match /missions/{missionId} {
+        allow read: if signedIn() && (isOrganizer(matchId) || isTeamMember(matchId));
+        allow create, update: if isOrganizer(matchId)
+          && request.resource.data.number is int
+          && request.resource.data.number >= 1
+          && request.resource.data.number <= 20
+          && request.resource.data.title is string
+          && request.resource.data.statement is string
+          && request.resource.data.languages is list;
+        allow delete: if isOrganizer(matchId);
+      }
+
       match /submissions/{submissionId} {
-        allow read: if signedIn() && (isOrganizer(matchId) || resource.data.teamId == request.auth.uid);
-        allow create: if signedIn() && request.resource.data.teamId == request.auth.uid
+        allow read: if signedIn()
+          && (isOrganizer(matchId) || resource.data.teamId == request.auth.uid);
+        allow create: if signedIn()
+          && isTeamMember(matchId)
+          && request.resource.data.teamId == request.auth.uid
           && request.resource.data.status == 'pending'
-          && request.resource.data.keys().hasOnly(['teamId','teamName','missionNumber','language','code','explanation','status','createdAt']);
+          && request.resource.data.keys().hasOnly([
+            'teamId', 'teamName', 'missionNumber', 'language',
+            'code', 'explanation', 'status', 'createdAt'
+          ])
+          && request.resource.data.missionNumber is int
+          && request.resource.data.missionNumber >= 1
+          && request.resource.data.missionNumber <= 20;
         allow update, delete: if false;
       }
+
       match /evaluations/{evaluationId} {
-        allow read: if signedIn() && isOrganizer(matchId);
-        allow write: if false; // Somente Cloud Functions com Admin SDK.
+        allow read: if isOrganizer(matchId);
+        allow write: if false;
       }
+
       match /audit/{eventId} {
-        allow read: if signedIn() && isOrganizer(matchId);
-        allow write: if false; // Somente Cloud Functions com Admin SDK.
+        allow read: if isOrganizer(matchId);
+        allow write: if false;
       }
     }
   }
